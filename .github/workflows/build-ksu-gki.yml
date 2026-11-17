@@ -66,14 +66,18 @@ jobs:
 
       - name: Resolve KernelSU ref
         id: ksu
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           ref="${{ github.event.inputs.ksu_ref }}"
           if [ -z "$ref" ] || [ "$ref" = "latest" ]; then
-            ref="$(curl -fsSL https://api.github.com/repos/tiann/KernelSU/releases/latest \
-                   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+            ref="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                   -H "Accept: application/vnd.github+json" \
+                   https://api.github.com/repos/tiann/KernelSU/releases/latest \
+                   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1 || true)"
           fi
-          [ -n "$ref" ] || { echo "cannot resolve KernelSU ref"; exit 1; }
+          [ -n "$ref" ] || ref="v3.3.1"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "KernelSU ref: $ref"
 
