@@ -61,8 +61,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache cpio curl flex git libelf-dev libssl-dev \
-            lz4 lzop python3 rsync unzip wget xz-utils zip zstd device-tree-compiler
+            bc bison build-essential ccache cpio curl dwarves flex git kmod \
+            libelf-dev libssl-dev lz4 lzop python3 rsync unzip wget xz-utils \
+            zip zstd device-tree-compiler
+          pahole --version
 
       - name: Resolve KernelSU ref
         id: ksu
