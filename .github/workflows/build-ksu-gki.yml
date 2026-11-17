@@ -151,7 +151,9 @@ jobs:
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          # only the kernel image is flashed (stock vendor_dlkm modules stay),
+          # so skip the ~3k vendor modules to keep the build short and slim
+          make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           echo "=== images ==="
           ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/"
 
