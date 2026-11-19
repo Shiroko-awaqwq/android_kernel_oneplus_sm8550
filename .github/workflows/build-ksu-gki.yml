@@ -57,6 +57,9 @@ jobs:
         LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
         LLVM=1 LLVM_IAS=1
+      # ld.lld defaults to --threads=all; on a 4-core/16G runner that makes the
+      # thin-LTO vmlinux.o step blow past RAM and get killed (exit 143).
+      KERNEL_LD: 'ld.lld --threads=2'
 
     steps:
       - name: Free disk space
@@ -69,7 +72,7 @@ jobs:
       - name: Setup swap
         uses: pierotofy/set-swap-space@master
         with:
-          swap-size-gb: 8
+          swap-size-gb: 16
 
       - name: Install build dependencies
         run: |
@@ -194,7 +197,9 @@ jobs:
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          free -g
+          df -h "$GITHUB_WORKSPACE"
+          make $MAKE_ARGS LD="$KERNEL_LD" O="$GITHUB_WORKSPACE/out" -j4 Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           echo "=== images ==="
           ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/"
 
