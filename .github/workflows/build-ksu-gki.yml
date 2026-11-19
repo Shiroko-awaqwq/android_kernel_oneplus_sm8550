@@ -1,50 +1,51 @@
-name: Build KernelSU GKI kernel (OnePlus Ace 3 / sm8550)
+name: Build SukiSU+SUSFS kernel (OnePlus Ace 3 / sm8550)
 
 # Target device : OnePlus Ace 3 (PJE110), OnePlusOS/ColorOS 16.0.1.300 (CN01)
-# Kernel base   : OnePlusOSS "oneplus/sm8550_v_15.0.0_ace_3" = Linux 5.15.167, exactly the
-#                 version the device reports. (The "b_16.0.0" line is 5.15.180 - not this device.)
-# Source policy : ONLY pristine OnePlusOSS trees. The PoXiao777 fork carries reSukiSU / SUSFS
-#                 patches in arch/block/drivers/fs/include/kernel/mm/net/security, which change
-#                 struct layouts and export CRCs. A kernel built from it cannot load the stock
-#                 vendor_dlkm modules -> module load failure -> boot crash (900e).
-# Root solution : KernelSU (tiann/KernelSU), in-kernel CONFIG_KSU=y, kprobe hooks.
-#                 KSU only adds code, it does not patch kernel headers, so the module ABI
-#                 (CRC / vermagic) stays identical to the stock kernel.
+# Kernel base   : OnePlusOSS "oneplus/sm8550_v_15.0.0_ace_3" = Linux 5.15.167 (matches the device;
+#                 the "b_16.0.0" line is 5.15.180 and is NOT this firmware).
+#
+# Source policy : pristine OnePlusOSS trees + exactly three additions:
+#                 1. SukiSU-Ultra (builtin branch) in drivers/kernelsu  -> code only
+#                 2. SUSFS kernel patches (susfs4ksu, gki-android13-5.15) -> fs/ + include/linux
+#                 3. CONFIG_KSU / CONFIG_KSU_SUSFS in the vendor fragment
+#                 Everything else from PoXiao777's tree is dropped on purpose: his branch also
+#                 carries BBRv3 / zram / KPM / HMBIRD / sched tweaks across arch, block, mm, net,
+#                 security - those are what break the stock vendor_dlkm module ABI (boot -> 900e).
 #
 # Layout (this branch sources ../vendor/oplus/... through symlinks):
 #   ws/                        <- OPLUS modules & devicetree repo
 #   ws/kernel_platform/common/ <- pristine kernel source
-#   ci/                        <- this repo (only for anykernel3/anykernel.sh)
+#   ci/                        <- this repo (anykernel3/anykernel.sh)
 #   out/                       <- build output
 
 on:
   workflow_dispatch:
     inputs:
-      ksu_ref:
-        description: 'KernelSU tag / branch / commit (empty or "latest" = newest release)'
+      susisu_ref:
+        description: 'SukiSU-Ultra kernel branch (builtin / builtin-new / dev)'
         required: false
-        default: 'latest'
-      label:
-        description: 'Extra label appended to the artifact name'
+        default: 'builtin'
+      with_susfs:
+        description: 'Apply SUSFS kernel patches'
         required: false
-        default: ''
+        default: 'true'
       kernel_repo:
-        description: 'Kernel repo to build'
+        description: 'Kernel repo'
         required: false
         default: 'OnePlusOSS/android_kernel_oneplus_sm8550'
       kernel_ref:
-        description: 'Kernel branch/tag'
+        description: 'Kernel branch'
         required: false
         default: 'oneplus/sm8550_v_15.0.0_ace_3'
+      label:
+        description: 'Extra label for the artifact name'
+        required: false
+        default: ''
   push:
     branches:
       - 'ksu-gki/ace3-15.0.0'
     paths-ignore:
       - '**/*.md'
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -57,8 +58,6 @@ jobs:
         LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
         LLVM=1 LLVM_IAS=1
-      # ld.lld defaults to --threads=all; on a 4-core/16G runner that makes the
-      # thin-LTO vmlinux.o step blow past RAM and get killed (exit 143).
       KERNEL_LD: 'ld.lld --threads=2'
 
     steps:
@@ -80,27 +79,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl dwarves flex git kmod \
             libelf-dev libssl-dev lz4 lzop python3 rsync unzip wget xz-utils \
-            zip zstd device-tree-compiler
+            zip zstd device-tree-compiler patch
           pahole --version
 
-      - name: Resolve KernelSU ref
-        id: ksu
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          ref="${{ github.event.inputs.ksu_ref }}"
-          if [ -z "$ref" ] || [ "$ref" = "latest" ]; then
-            ref="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-                   -H "Accept: application/vnd.github+json" \
-                   https://api.github.com/repos/tiann/KernelSU/releases/latest \
-                   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1 || true)"
-          fi
-          [ -n "$ref" ] || ref="v3.3.1"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "KernelSU ref: $ref"
-
-      - name: Checkout this repo (AnyKernel3 script only)
+      - name: Checkout this repo (AnyKernel3 script)
         uses: actions/checkout@v4
         with:
           path: ci
@@ -144,23 +126,16 @@ jobs:
           set -euo pipefail
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' Makefile | tr '\n' ' '; echo
           echo "kernel tree commit : $(git rev-parse HEAD)"
-          echo "=== SUSFS / reSukiSU leftovers (expected: none) ==="
-          if grep -rl 'susfs' --include='*.c' --include='*.h' fs kernel security include 2>/dev/null | head -5; then
-            echo "note: susfs references found"
-          else
-            echo "clean: no susfs references"
-          fi
+          echo "susfs references before patching: $(grep -rl 'susfs' --include='*.c' --include='*.h' fs kernel security include 2>/dev/null | wc -l)"
 
-      - name: Integrate KernelSU (${{ steps.ksu.outputs.ref }})
+      - name: Integrate SukiSU-Ultra (${{ github.event.inputs.susisu_ref || 'builtin' }})
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          ref="${{ steps.ksu.outputs.ref }}"
-          if ! git clone --depth=1 --branch "$ref" https://github.com/tiann/KernelSU KernelSU; then
-            git clone https://github.com/tiann/KernelSU KernelSU
-            git -C KernelSU checkout "$ref"
-          fi
-          echo "integrated KernelSU commit: $(git -C KernelSU rev-parse HEAD)"
+          ref="${{ github.event.inputs.susisu_ref }}"
+          git clone --depth=1 --branch "$ref" https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU
+          echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
+          ls KernelSU/kernel | head -n 8
 
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
@@ -168,21 +143,54 @@ jobs:
           grep -q 'kernelsu/' drivers/Makefile || \
             printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
 
-          cat >> KernelSU/kernel/Kbuild <<'KSUEOF'
+          # selinux internal + generated headers (objsec.h -> avc.h -> av_permissions.h)
+          if [ -f KernelSU/kernel/Kbuild ]; then kfile=KernelSU/kernel/Kbuild; else kfile=KernelSU/kernel/Makefile; fi
+          cat >> "$kfile" <<'KSUEOF'
 
           # --- OnePlus sm8550 / 5.15.167: selinux internal + generated headers ---
           ccflags-y += -I$(srctree)/security/selinux/include -I$(objtree)/security/selinux
           KSUEOF
+          tail -n 4 "$kfile"
 
-          # add-only config changes: nothing is disabled, so the module ABI stays intact
+      - name: Apply SUSFS patches
+        if: ${{ github.event.inputs.with_susfs != 'false' }}
+        working-directory: ws
+        run: |
+          set -euo pipefail
+          # susfs4ksu branch naming: gki-<android>-<kernel>
+          git clone --depth=1 --branch gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+
+          K=kernel_platform/common
+          ls susfs4ksu/kernel_patches/ | head -n 20
+
+          cp -v susfs4ksu/kernel_patches/fs/* "$K/fs/"
+          cp -v susfs4ksu/kernel_patches/include/linux/* "$K/include/linux/"
+
+          cd "$K"
+          echo "=== applying 50_add_susfs_in_gki-android13-5.15.patch ==="
+          patch --forward --no-backup-if-mismatch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch || {
+            echo "=== patch failed, list rejects ==="
+            find . -name '*.rej' -print -exec tail -n 30 {} \;
+            exit 1
+          }
+          echo "=== susfs applied, references now: $(grep -rl 'susfs' --include='*.c' --include='*.h' fs include/linux kernel 2>/dev/null | wc -l) ==="
+
+      - name: Enable KernelSU / SUSFS config
+        working-directory: ws/kernel_platform/common
+        run: |
+          set -euo pipefail
           frag=arch/arm64/configs/vendor/kalama_GKI.config
-          for cfg in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KALLSYMS_ALL=y CONFIG_EXT4_FS=y; do
+          cfgs="CONFIG_KSU=y CONFIG_KALLSYMS_ALL=y CONFIG_KPROBES=y CONFIG_EXT4_FS=y"
+          if [ "${{ github.event.inputs.with_susfs }}" != "false" ]; then
+            cfgs="$cfgs CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_TMPFS_XATTR=y CONFIG_TMPFS_POSIX_ACL=y"
+          fi
+          for cfg in $cfgs; do
             key=${cfg%%=*}
             if ! grep -qE "^(# )?${key}(=| is not set)" "$frag"; then
               printf '%s\n' "$cfg" >> "$frag"
             fi
           done
-          tail -n 8 "$frag"
+          tail -n 14 "$frag"
 
       - name: Configure kernel
         working-directory: ws/kernel_platform/common
@@ -190,15 +198,14 @@ jobs:
           set -euo pipefail
           make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" gki_defconfig vendor/kalama_GKI.config
           echo "=== config sanity ==="
-          grep -E '^(CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS_ALL|CONFIG_EXT4_FS|CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_LTO_CLANG_THIN|CONFIG_CFI_CLANG)=' \
-            "$GITHUB_WORKSPACE/out/.config"
+          grep -E '^(CONFIG_(KSU|KSU_SUSFS|KSU_SUSFS_SUS_PATH|KALLSYMS_ALL|KPROBES|EXT4_FS|MODULES|MODVERSIONS|CFI_CLANG))=' \
+            "$GITHUB_WORKSPACE/out/.config" || true
 
       - name: Build kernel
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          free -g
-          df -h "$GITHUB_WORKSPACE"
+          free -g; df -h "$GITHUB_WORKSPACE"
           make $MAKE_ARGS LD="$KERNEL_LD" O="$GITHUB_WORKSPACE/out" -j4 Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           echo "=== images ==="
           ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/"
@@ -214,9 +221,11 @@ jobs:
           cp "$IMG" ak3/Image
 
           rel="$(cat "$GITHUB_WORKSPACE/out/include/config/kernel.release" 2>/dev/null || echo unknown-5.15.167)"
+          tag="SukiSU"
+          [ "${{ github.event.inputs.with_susfs }}" != "false" ] && tag="SukiSU-SUSFS"
           label="$(printf '%s' '${{ github.event.inputs.label }}' | tr -cd 'A-Za-z0-9._-')"
           [ -n "$label" ] && label="-$label"
-          name="AK3-KernelSU-clean-${rel}${label}-$(date +%y%m%d)"
+          name="AK3-${tag}-clean-${rel}${label}-$(date +%y%m%d)"
           ( cd ak3 && zip -r9 "$GITHUB_WORKSPACE/$name.zip" . -x '.git/*' > /dev/null )
 
           echo "name=$name" >> "$GITHUB_OUTPUT"
