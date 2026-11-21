@@ -214,13 +214,16 @@ jobs:
           make $MAKE_ARGS LD="$KERNEL_LD" O="$GITHUB_WORKSPACE/out" -j4 Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           echo "=== output ==="
           ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"
+          ls -l "$GITHUB_WORKSPACE/out/vmlinux.symvers" "$GITHUB_WORKSPACE/out/Module.symvers" 2>/dev/null || true
           cat "$GITHUB_WORKSPACE/out/include/config/kernel.release"
           strings "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" | grep -m2 'Linux version'
 
       - name: Verify ABI against stock vendor modules
         run: |
           set -euo pipefail
-          python3 ci/verify_build.py out/Module.symvers ci/expected_kernel_symvers.json | tee verify-report.txt
+          SYMV=out/vmlinux.symvers
+          [ -f "$SYMV" ] || SYMV=out/Module.symvers
+          python3 ci/verify_build.py "$SYMV" ci/expected_kernel_symvers.json | tee verify-report.txt
 
       - name: Upload kernel artifacts
         if: always()
@@ -229,12 +232,14 @@ jobs:
           name: kernel-stockcfg-${{ github.run_id }}
           path: |
             out/arch/arm64/boot/Image
+            out/vmlinux.symvers
             out/Module.symvers
             out/.config
             build.log
             verify-report.txt
           if-no-files-found: warn
           compression-level: 0
+          include-hidden-files: true
 
       - name: Upload log on failure
         if: failure()
