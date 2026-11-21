@@ -172,8 +172,11 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out"
           C="$GITHUB_WORKSPACE/out/.config"
           cp "$GITHUB_WORKSPACE/ci/stock.oplus.config" "$C"
-          scripts/config --file "$C" --set-str LOCALVERSION "-android13-8-o-01155-ga71f0d7db4db"
-          scripts/config --file "$C" --disable LOCALVERSION_AUTO
+          # Exact stock release string. Keep LOCALVERSION empty + LOCALVERSION_AUTO=y
+          # (as in the shipping config) and pin the suffix through .scmversion.
+          printf '%s' '-android13-8-o-01155-ga71f0d7db4db' > .scmversion
+          scripts/config --file "$C" --set-str LOCALVERSION ""
+          scripts/config --file "$C" --enable LOCALVERSION_AUTO
           scripts/config --file "$C" --disable TRIM_UNUSED_KSYMS
           scripts/config --file "$C" --set-str UNUSED_KSYMS_WHITELIST ""
           for cfg in KSU KSU_FEATURE_ADBROOT KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT \
