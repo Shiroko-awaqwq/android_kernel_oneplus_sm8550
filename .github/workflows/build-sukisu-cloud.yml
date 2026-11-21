@@ -161,10 +161,6 @@ jobs:
           fi
           grep -m1 'SUSFS_VERSION' include/linux/susfs.h
 
-      - name: Fix DEVTMPFS=n stubs (release tree expects DEVTMPFS=y)
-        working-directory: ws/kernel_platform/common
-        run: python3 "$GITHUB_WORKSPACE/ci/fix_devtmpfs.py" .
-
       - name: Configure with the shipping stock .config
         working-directory: ws/kernel_platform/common
         run: |
