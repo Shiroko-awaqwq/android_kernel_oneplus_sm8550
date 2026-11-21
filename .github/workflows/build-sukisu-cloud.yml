@@ -183,9 +183,21 @@ jobs:
           done
           scripts/config --file "$C" --disable KPM
           scripts/config --file "$C" --disable KSU_DEBUG
+          # Vendor features that are absent from the shipping Image config but whose
+          # Kconfig default is y in the OPLUS tree. They call symbols that only exist
+          # in vendor modules (qcom_smem_alloc / get_project), so they must not be
+          # built into vmlinux. Match the official kalama_GKI.config (=m) or the
+          # shipping Image (not present -> n).
+          scripts/config --file "$C" --module OPLUS_FEATURE_SENSOR_CFG
+          scripts/config --file "$C" --module HORAE_THERMAL_SHELL
+          scripts/config --file "$C" --disable OPLUS_FEATURE_PERFORMANCE_MM
+          scripts/config --file "$C" --disable DYNAMIC_TUNING_SWAPPINESS
+          scripts/config --file "$C" --disable OPLUS_FEATURE_WINDOW_POLICY
+          scripts/config --file "$C" --disable ARCH_MEMORY_PROBE
+          scripts/config --file "$C" --disable CORE_REGDB
           make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" olddefconfig
           echo "=== key configs ==="
-          grep -E '^(CONFIG_(KSU|KSU_SUSFS|MODVERSIONS|CFI_CLANG|LTO_CLANG_FULL|LOCALVERSION))=' "$C" | head -20
+          grep -E '^(CONFIG_(KSU|KSU_SUSFS|OPLUS_FEATURE_SENSOR_CFG|HORAE_THERMAL_SHELL|OPLUS_FEATURE_PERFORMANCE_MM|DYNAMIC_TUNING_SWAPPINESS|OPLUS_FEATURE_WINDOW_POLICY|MODVERSIONS|CFI_CLANG|LTO_CLANG_FULL|LOCALVERSION))=' "$C" | head -20
 
       - name: Install UAPI headers (SukiSU preinit runner)
         working-directory: ws/kernel_platform/common
