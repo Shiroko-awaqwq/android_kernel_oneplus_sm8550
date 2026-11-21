@@ -27,6 +27,9 @@ on:
         description: 'Artifact label'
         required: false
         default: 'stockcfg'
+  push:
+    branches:
+      - 'ksu-gki/ace3-15.0.0'
 
 jobs:
   build:
