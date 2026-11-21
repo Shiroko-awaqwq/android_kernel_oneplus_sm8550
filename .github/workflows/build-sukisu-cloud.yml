@@ -1,0 +1,232 @@
+name: Build SukiSU-SUSFS kernel (stock config)
+
+# OnePlus Ace 3 (PJE110) / ColorOS 16.0.1.300(CN01) / KMI 5.15-android13-8
+#
+# This workflow builds the kernel with the REAL shipping .config extracted from the
+# stock boot.img of the official OFP package (ci/stock.oplus.config), because the
+# generic gki_defconfig+kalam_GKI.config combination used before does NOT match the
+# shipped kernel and produces different symbol CRCs -> stock vendor_dlkm modules
+# refuse to load -> Qualcomm 900E crash dump.
+#
+# Additions on top of the stock config: CONFIG_KSU / CONFIG_KSU_SUSFS only.
+# The build is verified against the CRCs that the stock vendor_dlkm + vendor_boot +
+# system_dlkm modules expect (ci/expected_kernel_symvers.json, 2592 symbols).
+
+on:
+  workflow_dispatch:
+    inputs:
+      susisu_ref:
+        description: 'SukiSU branch/tag'
+        required: false
+        default: 'builtin'
+      with_susfs:
+        description: 'Apply SUSFS kernel patches'
+        required: false
+        default: 'true'
+      label:
+        description: 'Artifact label'
+        required: false
+        default: 'stockcfg'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      MAKE_ARGS: >-
+        ARCH=arm64 SUBARCH=arm64 HEADER_ARCH=arm64
+        CC=clang CXX=clang++
+        LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy
+        OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+        LLVM=1 LLVM_IAS=1
+      KERNEL_LD: 'ld.lld --threads=2'
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost /usr/lib/jvm /usr/share/swift || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Setup swap
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl dwarves flex git kmod \
+            libelf-dev libssl-dev lz4 lzop python3 rsync unzip wget xz-utils \
+            zip zstd device-tree-compiler patch
+          pahole --version
+
+      - name: Fetch CI files (from this commit)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci"
+          api="https://api.github.com/repos/${{ github.repository }}/contents"
+          for f in stock.oplus.config expected_kernel_symvers.json verify_build.py fix_susfs_rejects.py fix_devtmpfs.py; do
+            curl -fsSL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              -o "$GITHUB_WORKSPACE/ci/$f" \
+              "$api/ci/$f?ref=${{ github.sha }}"
+          done
+          ls -l "$GITHUB_WORKSPACE/ci"
+
+      - name: Checkout OPLUS modules & devicetree
+        uses: actions/checkout@v4
+        with:
+          repository: OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8550
+          ref: oneplus/sm8550_v_15.0.0_ace_3
+          path: ws
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: OnePlusOSS/android_kernel_oneplus_sm8550
+          ref: oneplus/sm8550_v_15.0.0_ace_3
+          path: ws/kernel_platform/common
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download AOSP clang r450784e
+        run: |
+          set -euo pipefail
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz"
+          ok=0
+          for i in 1 2 3 4 5 6; do
+            if wget -q --tries=3 --waitretry=5 -O clang.tar.gz "$URL" && tar -tzf clang.tar.gz >/dev/null 2>&1; then
+              ok=1; break
+            fi
+            echo "clang download attempt $i failed"; sleep 10
+          done
+          [ "$ok" = "1" ] || { echo "clang download FAILED"; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/clang"
+          tar -xzf clang.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          rm -f clang.tar.gz
+          echo "$GITHUB_WORKSPACE/clang/bin" >> "$GITHUB_PATH"
+          "$GITHUB_WORKSPACE"/clang/bin/clang --version | head -n 2
+
+      - name: Verify source
+        working-directory: ws/kernel_platform/common
+        run: |
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' Makefile | tr '\n' ' '; echo
+          echo "kernel commit: $(git rev-parse HEAD)"
+
+      - name: Integrate SukiSU
+        working-directory: ws/kernel_platform/common
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref }}" \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU
+          echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
+            sed -i 's|^endmenu$|source "drivers/kernelsu/Kconfig"\nendmenu|' drivers/Kconfig
+          grep -q 'kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          printf '\nccflags-y += -I$(objtree)/security/selinux\n' >> KernelSU/kernel/Makefile
+          tail -n 4 KernelSU/kernel/Makefile
+
+      - name: Apply SUSFS patches
+        if: ${{ github.event.inputs.with_susfs != 'false' }}
+        working-directory: ws
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          K=kernel_platform/common
+          cp -v susfs4ksu/kernel_patches/fs/* "$K/fs/"
+          cp -v susfs4ksu/kernel_patches/include/linux/* "$K/include/linux/"
+          cd "$K"
+          patch -p1 --forward --no-backup-if-mismatch \
+            < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch || true
+          python3 "$GITHUB_WORKSPACE/ci/fix_susfs_rejects.py" .
+          if find . -name '*.rej' | grep -q .; then
+            echo "=== unresolved rejects ==="
+            find . -name '*.rej' -exec sh -c 'echo "--- $1"; tail -n 25 "$1"' _ {} \;
+            exit 1
+          fi
+          grep -m1 'SUSFS_VERSION' include/linux/susfs.h
+
+      - name: Fix DEVTMPFS=n stubs (release tree expects DEVTMPFS=y)
+        working-directory: ws/kernel_platform/common
+        run: python3 "$GITHUB_WORKSPACE/ci/fix_devtmpfs.py" .
+
+      - name: Configure with the shipping stock .config
+        working-directory: ws/kernel_platform/common
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          C="$GITHUB_WORKSPACE/out/.config"
+          cp "$GITHUB_WORKSPACE/ci/stock.oplus.config" "$C"
+          scripts/config --file "$C" --set-str LOCALVERSION "-android13-8-o-01155-ga71f0d7db4db"
+          scripts/config --file "$C" --disable LOCALVERSION_AUTO
+          scripts/config --file "$C" --disable TRIM_UNUSED_KSYMS
+          scripts/config --file "$C" --set-str UNUSED_KSYMS_WHITELIST ""
+          for cfg in KSU KSU_FEATURE_ADBROOT KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT \
+                     KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG \
+                     KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                     KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP KALLSYMS_ALL KPROBES EXT4_FS; do
+            scripts/config --file "$C" --enable "$cfg"
+          done
+          scripts/config --file "$C" --disable KPM
+          scripts/config --file "$C" --disable KSU_DEBUG
+          make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" olddefconfig
+          echo "=== key configs ==="
+          grep -E '^(CONFIG_(KSU|KSU_SUSFS|MODVERSIONS|CFI_CLANG|LTO_CLANG_FULL|LOCALVERSION))=' "$C" | head -20
+
+      - name: Install UAPI headers (SukiSU preinit runner)
+        working-directory: ws/kernel_platform/common
+        run: |
+          make $MAKE_ARGS O="$GITHUB_WORKSPACE/out" headers_install \
+            && echo "headers_install OK" || echo "headers_install failed (preinit disabled)"
+          ls -l "$GITHUB_WORKSPACE/out/usr/include/linux/unistd.h" 2>/dev/null || true
+
+      - name: Build Image
+        working-directory: ws/kernel_platform/common
+        run: |
+          set -euo pipefail
+          free -g
+          make $MAKE_ARGS LD="$KERNEL_LD" O="$GITHUB_WORKSPACE/out" -j4 Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          echo "=== output ==="
+          ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"
+          cat "$GITHUB_WORKSPACE/out/include/config/kernel.release"
+          strings "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" | grep -m2 'Linux version'
+
+      - name: Verify ABI against stock vendor modules
+        run: |
+          set -euo pipefail
+          python3 ci/verify_build.py out/Module.symvers ci/expected_kernel_symvers.json | tee verify-report.txt
+
+      - name: Upload kernel artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-stockcfg-${{ github.run_id }}
+          path: |
+            out/arch/arm64/boot/Image
+            out/Module.symvers
+            out/.config
+            build.log
+            verify-report.txt
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_id }}
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 7
