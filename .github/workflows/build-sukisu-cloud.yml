@@ -130,7 +130,7 @@ jobs:
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref }}" \
+          git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref || 'builtin' }}" \
             https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU
           echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
           ln -sfn ../KernelSU/kernel drivers/kernelsu
