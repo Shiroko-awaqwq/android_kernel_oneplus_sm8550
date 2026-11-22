@@ -51,14 +51,28 @@ ok &= insert_after('fs/namespace.c', '#include "internal.h"', EXT_NS)
 ok &= insert_after('fs/proc/task_mmu.c', '#include <linux/pkeys.h>', INC_TM)
 ok &= insert_after('mm/memory.c', '#include <linux/vmalloc.h>', INC_MM)
 
-# drop reject/orig artifacts anywhere in the tree
+# Drop patch backups, but NEVER hide a reject we did not explicitly resolve.
+# The workflow fails on any remaining .rej, so unknown rejects must stay visible.
+known_rejects = {'fs/namespace.c.rej', 'fs/proc/task_mmu.c.rej', 'mm/memory.c.rej'}
 removed = 0
+unresolved = []
 for root, _, files in os.walk(W):
     if '/.git' in root:
         continue
     for f in files:
-        if f.endswith('.rej') or f.endswith('.orig'):
-            os.remove(os.path.join(root, f))
+        full = os.path.join(root, f)
+        rel = os.path.relpath(full, W).replace('\\', '/')
+        if f.endswith('.orig'):
+            os.remove(full)
             removed += 1
-print(f'removed {removed} .rej/.orig files')
+        elif f.endswith('.rej'):
+            if ok and rel in known_rejects:
+                os.remove(full)
+                removed += 1
+            else:
+                unresolved.append(rel)
+print(f'removed {removed} .orig/known-reject files')
+if unresolved:
+    print('UNRESOLVED rejects kept for the workflow to fail on: ' + ', '.join(unresolved))
+    ok = False
 sys.exit(0 if ok else 1)

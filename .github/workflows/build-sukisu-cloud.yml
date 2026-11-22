@@ -2,6 +2,11 @@ name: Build SukiSU-SUSFS kernel (stock config)
 
 # OnePlus Ace 3 (PJE110) / ColorOS 16.0.1.300(CN01) / KMI 5.15-android13-8
 #
+# Source is pinned to the official "Synchronize code for OnePlus PJE110_16.0.1.300(CN01)"
+# commits (2025-11-27), not the older 15.0.0.851 branch. The 16.0.1.300 modules import
+# vendor hooks/exports (css_task_iter_*, cpu_cgrp_subsys, android_vh_sched_move_task,
+# android_vh_reweight_entity) that do not exist in the 15.0.0.851 source.
+#
 # This workflow builds the kernel with the REAL shipping .config extracted from the
 # stock boot.img of the official OFP package (ci/stock.oplus.config), because the
 # generic gki_defconfig+kalam_GKI.config combination used before does NOT match the
@@ -75,7 +80,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/ci"
           api="https://api.github.com/repos/${{ github.repository }}/contents"
-          for f in stock.oplus.config expected_kernel_symvers.json verify_build.py fix_susfs_rejects.py fix_devtmpfs.py; do
+          for f in stock.oplus.config expected_kernel_symvers.json expected_kernel_symvers_full.json verify_build.py fix_susfs_rejects.py fix_devtmpfs.py; do
             curl -fsSL --retry 5 --retry-all-errors \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.raw" \
@@ -88,7 +93,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8550
-          ref: oneplus/sm8550_v_15.0.0_ace_3
+          # PJE110_16.0.1.300(CN01), 2025-11-27 (exact firmware match)
+          ref: 1c6caa7b65a68714dadd961d2cc4bcd3a9c66ac4
           path: ws
           fetch-depth: 1
           persist-credentials: false
@@ -97,7 +103,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: OnePlusOSS/android_kernel_oneplus_sm8550
-          ref: oneplus/sm8550_v_15.0.0_ace_3
+          # PJE110_16.0.1.300(CN01), 2025-11-27, 5.15.167 (exact firmware match)
+          ref: 05a133a7de6a6a74f4aa8989313fe1227268ca13
           path: ws/kernel_platform/common
           fetch-depth: 1
           persist-credentials: false
@@ -132,6 +139,9 @@ jobs:
           set -euo pipefail
           git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref || 'builtin' }}" \
             https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU
+          # Pin the exact SukiSU revision used for the verified build.
+          git -C KernelSU fetch --depth=1 origin 4bec532dd447e2852aa8932afa768255350c103a || true
+          git -C KernelSU checkout --detach 4bec532dd447e2852aa8932afa768255350c103a
           echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
@@ -147,6 +157,10 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth=1 --branch gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          # Pin the exact SUSFS revision used for the verified build.
+          git -C susfs4ksu fetch --depth=1 origin c1d1da42b74771944207ec45aaceff9c57e84985 || true
+          git -C susfs4ksu checkout --detach c1d1da42b74771944207ec45aaceff9c57e84985
+          echo "SUSFS commit: $(git -C susfs4ksu rev-parse HEAD)"
           K=kernel_platform/common
           cp -v susfs4ksu/kernel_patches/fs/* "$K/fs/"
           cp -v susfs4ksu/kernel_patches/include/linux/* "$K/include/linux/"
@@ -216,6 +230,12 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"
           ls -l "$GITHUB_WORKSPACE/out/vmlinux.symvers" "$GITHUB_WORKSPACE/out/Module.symvers" 2>/dev/null || true
           cat "$GITHUB_WORKSPACE/out/include/config/kernel.release"
+          # Hard gate: system_dlkm loads modules from /lib/modules/<uname -r>/.
+          test "$(cat "$GITHUB_WORKSPACE/out/include/config/kernel.release")" = \
+            "5.15.167-android13-8-o-01155-ga71f0d7db4db"
+          grep -q '^CONFIG_KSU=y' "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y' "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_MODVERSIONS=y' "$GITHUB_WORKSPACE/out/.config"
           strings "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" | grep -m2 'Linux version'
 
       - name: Verify ABI against stock vendor modules
@@ -223,7 +243,8 @@ jobs:
           set -euo pipefail
           SYMV=out/vmlinux.symvers
           [ -f "$SYMV" ] || SYMV=out/Module.symvers
-          python3 ci/verify_build.py "$SYMV" ci/expected_kernel_symvers.json | tee verify-report.txt
+          # Full import set: vendor_dlkm + vendor_boot + system_dlkm (3276 symbols).
+          python3 ci/verify_build.py "$SYMV" ci/expected_kernel_symvers_full.json | tee verify-report.txt
 
       - name: Upload kernel artifacts
         if: always()
