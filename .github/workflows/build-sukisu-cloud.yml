@@ -23,7 +23,7 @@ on:
       susisu_ref:
         description: 'SukiSU branch/tag'
         required: false
-        default: 'builtin'
+        default: 'builtin-new'
       with_susfs:
         description: 'Apply SUSFS kernel patches'
         required: false
@@ -137,11 +137,13 @@ jobs:
         working-directory: ws/kernel_platform/common
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref || 'builtin' }}" \
+          git clone --depth=1 --branch "${{ github.event.inputs.susisu_ref || 'builtin-new' }}" \
             https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU
-          # Pin the exact SukiSU revision used for the verified build.
-          git -C KernelSU fetch --depth=1 origin 4bec532dd447e2852aa8932afa768255350c103a || true
-          git -C KernelSU checkout --detach 4bec532dd447e2852aa8932afa768255350c103a
+          # Pin the exact SukiSU revision used for the verified build.  builtin-new
+          # adds KSU_FEATURE_AVC_SPOOF (feature id 10003) which the v3.0.0 manager
+          # needs for the "AVC log spoofing" toggle.
+          git -C KernelSU fetch --depth=1 origin 5a3ec4145059ed2c4f22c70a16a28a616e104c33 || true
+          git -C KernelSU checkout --detach 5a3ec4145059ed2c4f22c70a16a28a616e104c33
           echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
